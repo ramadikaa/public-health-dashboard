@@ -210,7 +210,7 @@ st.sidebar.markdown("---")
 # Page Navigation
 page = st.sidebar.selectbox(
     "Select Dashboard Page",
-    ["🌍 Real-time Monitoring", "📈 Country Analysis", "🗺️ WHO Regions", "🤖 Predictive Analytics", "🔬 FHIR API Demo", "ℹ️ About"]
+    ["🌍 Real-time Monitoring", "📈 Country Analysis", "🗺️ WHO Regions", "🤖 Predictive Analytics", "🔬 FHIR API Demo", "ℹ️ About", "🔐 Security Demo"]
 )
 
 st.sidebar.markdown("---")
@@ -1553,3 +1553,200 @@ elif page == "ℹ️ About":
     
     st.markdown("---")
     st.success("✅ Dashboard successfully implements all Modul 1-7 requirements")
+
+elif page == "🔐 Security Demo":
+    st.header("🔐 Security & Access Control Demonstration")
+    st.markdown("**Module 1**: Ethical & Governance - RBAC Implementation")
+    
+    st.info("""
+    **Role-Based Access Control (RBAC)** ensures that users can only access 
+    features and data appropriate to their role, protecting sensitive health information.
+    """)
+    
+    if not api_connected:
+        st.warning("⚠️ Flask API is not running.")
+        st.stop()
+    
+    # Fetch RBAC configuration
+    st.subheader("📋 RBAC Configuration")
+    
+    with st.spinner("Loading RBAC info..."):
+        rbac_data = fetch_api("security/rbac")
+    
+    if rbac_data and rbac_data.get('status') == 'success':
+        rbac = rbac_data['rbac']
+        
+        # Display roles and permissions
+        st.markdown("### 👥 User Roles & Permissions")
+        
+        roles_df = pd.DataFrame([
+            {
+                'Role': role,
+                'Description': info['description'],
+                'Permissions': ', '.join(info['permissions'])
+            }
+            for role, info in rbac['roles'].items()
+        ])
+        
+        st.dataframe(roles_df, use_container_width=True, hide_index=True)
+        
+        st.markdown("---")
+        
+        # Interactive RBAC Test
+        st.subheader("🧪 Test RBAC Access Control")
+        
+        st.markdown("""
+        This demonstrates how different user roles have different access levels.
+        Select a role and test API access.
+        """)
+        
+        # Role selector
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            selected_role = st.selectbox(
+                "Select User Role",
+                list(rbac['demo_api_keys'].keys()),
+                format_func=lambda x: f"{x.replace('_', ' ').title()}"
+            )
+        
+        with col2:
+            api_key = rbac['demo_api_keys'][selected_role]
+            st.text_input("API Key", value=api_key, disabled=True)
+        
+        # Display role permissions
+        role_info = rbac['roles'][selected_role]
+        st.info(f"**{role_info['description']}**")
+        
+        permissions = role_info['permissions']
+        if 'all' in permissions:
+            st.success("✅ Full access to all features")
+        else:
+            st.write("**Allowed actions:**")
+            for perm in permissions:
+                st.write(f"✅ {perm.replace('_', ' ').title()}")
+        
+        st.markdown("---")
+        
+        # Test API access
+        st.subheader("🔬 Test Protected Endpoint")
+        
+        if st.button("🔐 Test API Access with Selected Role", type="primary"):
+            with st.spinner(f"Testing access as {selected_role}..."):
+                try:
+                    response = requests.get(
+                        f"{API_ROOT}/api/security/test-rbac",
+                        headers={'X-API-Key': api_key},
+                        timeout=5
+                    )
+                    
+                    if response.status_code == 200:
+                        data = response.json()
+                        st.success(f"✅ Access Granted!")
+                        
+                        st.json({
+                            "status": data['status'],
+                            "message": data['message'],
+                            "user": data['user']
+                        })
+                    
+                    elif response.status_code == 401:
+                        st.error("🔴 Authentication Required")
+                        st.json(response.json())
+                    
+                    elif response.status_code == 403:
+                        data = response.json()
+                        st.error(f"🔴 Access Denied")
+                        st.warning(f"Your role '{selected_role}' does not have permission: '{data.get('message')}'")
+                        st.json(data)
+                    
+                    else:
+                        st.error(f"❌ Unexpected error: {response.status_code}")
+                
+                except Exception as e:
+                    st.error(f"Connection error: {str(e)}")
+        
+        st.markdown("---")
+        
+        # Postman testing instructions
+        st.subheader("📮 Test with Postman")
+        
+        st.code(f"""
+GET http://127.0.0.1:5000/api/security/test-rbac
+
+Headers:
+X-API-Key: {api_key}
+
+Expected Response (200 OK):
+{{
+  "status": "success",
+  "message": "RBAC test successful!",
+  "user": {{
+    "name": "...",
+    "role": "{selected_role}"
+  }},
+  "access_granted": true
+}}
+        """, language="http")
+        
+        st.markdown("---")
+        
+        # Access Matrix
+        st.subheader("📊 Access Control Matrix")
+        
+        endpoints = [
+            {'Endpoint': '/api/dashboard/metrics', 'Required Permission': 'view_dashboard'},
+            {'Endpoint': '/api/predictions/mortality', 'Required Permission': 'use_cdss'},
+            {'Endpoint': '/api/fhir/observation', 'Required Permission': 'view_fhir_data'},
+            {'Endpoint': '/api/cases/export', 'Required Permission': 'export_data'},
+        ]
+        
+        matrix_data = []
+        for endpoint_info in endpoints:
+            row = {'Endpoint': endpoint_info['Endpoint']}
+            for role, info in rbac['roles'].items():
+                perms = info['permissions']
+                has_access = 'all' in perms or endpoint_info['Required Permission'] in perms
+                row[role] = '✅' if has_access else '❌'
+            matrix_data.append(row)
+        
+        matrix_df = pd.DataFrame(matrix_data)
+        st.dataframe(matrix_df, use_container_width=True, hide_index=True)
+        
+        st.markdown("---")
+        
+        # Security best practices
+        with st.expander("🛡️ Security Best Practices"):
+            st.markdown("""
+            **Implemented Security Measures:**
+            
+            1. **Role-Based Access Control (RBAC)**
+               - Granular permission management
+               - Separation of duties
+               - Least privilege principle
+            
+            2. **API Authentication**
+               - API key-based authentication
+               - Header-based credential passing
+               - Token validation on every request
+            
+            3. **Authorization Checks**
+               - Permission verification before data access
+               - Clear error messages (401 vs 403)
+               - Audit trail capability
+            
+            4. **Data Protection**
+               - De-identified datasets
+               - No PII exposure
+               - Parameterized SQL queries (SQL injection prevention)
+            
+            5. **Production Considerations**
+               - Replace demo keys with JWT tokens
+               - Implement OAuth 2.0 for SSO
+               - Add rate limiting
+               - Enable HTTPS/TLS encryption
+               - Implement audit logging
+            """)
+    
+    else:
+        st.error("Failed to load RBAC configuration")
