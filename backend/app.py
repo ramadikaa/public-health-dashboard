@@ -15,6 +15,7 @@ import traceback
 from routes.dashboard import dashboard_bp
 from routes.cases import cases_bp
 from routes.fhir import fhir_bp
+from routes.predictions import predictions_bp
 
 # Create Flask app
 app = Flask(__name__)
@@ -62,6 +63,7 @@ def handle_preflight():
 app.register_blueprint(dashboard_bp)
 app.register_blueprint(cases_bp)
 app.register_blueprint(fhir_bp)
+app.register_blueprint(predictions_bp)
 
 # ===== ROOT ENDPOINTS =====
 @app.route('/')
@@ -79,7 +81,9 @@ def index():
             "country_cases": "/api/cases/country/{country}",
             "who_regions": "/api/cases/who-regions",
             "fhir_observation": "/api/fhir/observation?country={country}&date={date}",
-            "fhir_capability": "/api/fhir/capability"
+            "fhir_capability": "/api/fhir/capability",
+            "predict_mortality": "/api/predictions/mortality",
+            "model_performance": "/api/predictions/model-performance"
         },
         "documentation": "https://github.com/your-repo",
         "health_check": "/health",

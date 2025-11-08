@@ -14,6 +14,7 @@ import plotly.express as px
 from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 import time
+import numpy as np 
 
 # ===== CONFIGURATION =====
 # Use 127.0.0.1 instead of localhost for better Windows compatibility
@@ -209,7 +210,7 @@ st.sidebar.markdown("---")
 # Page Navigation
 page = st.sidebar.selectbox(
     "Select Dashboard Page",
-    ["🌍 Real-time Monitoring", "📈 Country Analysis", "🗺️ WHO Regions", "🔬 FHIR API Demo", "ℹ️ About"]
+    ["🌍 Real-time Monitoring", "📈 Country Analysis", "🗺️ WHO Regions", "🤖 Predictive Analytics", "🔬 FHIR API Demo", "ℹ️ About"]
 )
 
 st.sidebar.markdown("---")
@@ -220,6 +221,8 @@ st.sidebar.info("""
 - `/api/dashboard/countries/top`
 - `/api/cases/country/{name}`
 - `/api/cases/who-regions`
+- `/api/predictions/mortality`
+- `/api/predictions/model-performance`
 - `/api/fhir/observation`
 - `/api/fhir/capability`
 """)
@@ -489,6 +492,11 @@ elif page == "📈 Country Analysis":
             df = pd.DataFrame(country_data['data'])
             df['date'] = pd.to_datetime(df['date'])
             
+            # ===== FIX: Convert to numeric =====
+            numeric_cols = ['confirmed', 'deaths', 'recovered', 'active']
+            for col in numeric_cols:
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+            
             # Latest metrics
             latest = df.iloc[-1]
             previous = df.iloc[-2] if len(df) > 1 else latest
@@ -634,10 +642,15 @@ elif page == "🗺️ WHO Regions":
     if regions_data and regions_data.get('status') == 'success':
         df_regions = pd.DataFrame(regions_data['data'])
         
+        # ===== FIX: Convert to numeric =====
+        numeric_cols = ['confirmed', 'deaths', 'recovered', 'active']
+        for col in numeric_cols:
+            df_regions[col] = pd.to_numeric(df_regions[col], errors='coerce').fillna(0)
+        
         # Summary metrics
-        total_confirmed = df_regions['confirmed'].sum()
-        total_deaths = df_regions['deaths'].sum()
-        total_recovered = df_regions['recovered'].sum()
+        total_confirmed = int(df_regions['confirmed'].sum())
+        total_deaths = int(df_regions['deaths'].sum())
+        total_recovered = int(df_regions['recovered'].sum())
         
         col1, col2, col3 = st.columns(3)
         
@@ -724,6 +737,10 @@ elif page == "🗺️ WHO Regions":
         df_display['mortality_rate'] = (df_display['deaths'] / df_display['confirmed'] * 100).round(2)
         df_display['recovery_rate'] = (df_display['recovered'] / df_display['confirmed'] * 100).round(2)
         
+        # Replace inf/nan
+        df_display['mortality_rate'] = df_display['mortality_rate'].replace([np.inf, -np.inf], 0).fillna(0)
+        df_display['recovery_rate'] = df_display['recovery_rate'].replace([np.inf, -np.inf], 0).fillna(0)
+        
         # Reorder columns
         df_display = df_display[['region', 'confirmed', 'deaths', 'recovered', 'active', 'mortality_rate', 'recovery_rate']]
         df_display.columns = ['WHO Region', 'Confirmed', 'Deaths', 'Recovered', 'Active', 'Mortality Rate (%)', 'Recovery Rate (%)']
@@ -804,15 +821,24 @@ elif page == "🔬 FHIR API Demo":
                     st.metric("Effective Date", fhir_data['effectiveDateTime'])
                 
                 with col3:
-                    st.metric("Confirmed Cases", f"{fhir_data['valueQuantity']['value']:,}")
+                    # ===== FIX: Convert to int before formatting =====
+                    confirmed_value = int(fhir_data['valueQuantity']['value'])
+                    st.metric("Confirmed Cases", f"{confirmed_value:,}")
                     
                     # Extract deaths from components
                     deaths = next(
                         (comp['valueQuantity']['value'] for comp in fhir_data.get('component', []) 
                          if 'Deaths' in comp['code'].get('text', '')),
-                        'N/A'
+                        0
                     )
-                    st.metric("Deaths", f"{deaths:,}" if isinstance(deaths, (int, float)) else deaths)
+                    
+                    # Convert deaths to int
+                    if isinstance(deaths, (int, float)):
+                        deaths_int = int(deaths)
+                        st.metric("Deaths", f"{deaths_int:,}")
+                    else:
+                        st.metric("Deaths", "N/A")
+
                 
                 st.markdown("---")
                 
@@ -823,7 +849,14 @@ elif page == "🔬 FHIR API Demo":
                     for comp in fhir_data['component']:
                         comp_name = comp['code'].get('text', 'Unknown')
                         comp_value = comp['valueQuantity']['value']
-                        st.write(f"**{comp_name}**: {comp_value:,}")
+                        
+                        # ===== FIX: Convert to int before formatting =====
+                        if isinstance(comp_value, (int, float)):
+                            comp_value_int = int(comp_value)
+                            st.write(f"**{comp_name}**: {comp_value_int:,}")
+                        else:
+                            st.write(f"**{comp_name}**: {comp_value}")
+
                 
                 st.markdown("---")
                 
@@ -885,6 +918,516 @@ Content-Type: application/fhir+json
             
             with st.expander("View Full CapabilityStatement"):
                 st.json(capability_data)
+
+# ==============================
+# PAGE 4.5: PREDICTIVE ANALYTICS (ML MODEL)
+# ==============================
+elif page == "🤖 Predictive Analytics":
+    st.header("🤖 AI-Powered COVID-19 Mortality Risk Prediction")
+    st.markdown("**Modul 4**: Clinical Decision Support Systems | **Modul 7**: Predictive Analytics & Machine Learning")
+    
+    st.info("""
+    📊 **Machine Learning Model for COVID-19 Mortality Risk Assessment**
+    
+    This page demonstrates predictive analytics using a trained Random Forest Classifier
+    to assess mortality risk based on epidemiological features and outbreak patterns.
+    
+    **Clinical Decision Support:**
+    - Risk stratification (Low/Medium/High)
+    - Evidence-based recommendations
+    - Real-time prediction API
+    """)
+    
+    if not api_connected:
+        st.warning("⚠️ Flask API is not running. Cannot load ML model.")
+        st.stop()
+    
+    # ===== MODEL PERFORMANCE SECTION =====
+    st.subheader("📈 Model Performance Metrics")
+    
+    with st.spinner("📊 Loading model evaluation metrics..."):
+        perf_data = fetch_api("predictions/model-performance")
+    
+    if perf_data and perf_data.get('status') == 'success':
+        metrics = perf_data['metrics']
+        
+        # Display metrics in columns
+        col1, col2, col3, col4, col5 = st.columns(5)
+        
+        with col1:
+            st.metric("Accuracy", f"{metrics['accuracy']:.1%}", 
+                     help="Overall model accuracy on test set")
+        
+        with col2:
+            st.metric("Precision", f"{metrics['precision']:.1%}",
+                     help="Proportion of positive predictions that were correct")
+        
+        with col3:
+            st.metric("Recall", f"{metrics['recall']:.1%}",
+                     help="Proportion of actual positives correctly identified")
+        
+        with col4:
+            st.metric("F1-Score", f"{metrics['f1_score']:.1%}",
+                     help="Harmonic mean of precision and recall")
+        
+        with col5:
+            st.metric("AUC-ROC", f"{metrics['auc_roc']:.3f}",
+                     help="Area under ROC curve (0.5=random, 1.0=perfect)")
+        
+        st.markdown("---")
+        
+        # ===== ROC CURVE =====
+        st.subheader("📊 ROC Curve Analysis")
+        
+        st.markdown("""
+        **ROC (Receiver Operating Characteristic) Curve** shows the trade-off between 
+        True Positive Rate and False Positive Rate at various classification thresholds.
+        A higher AUC indicates better model performance.
+        """)
+        
+        roc = perf_data['roc_curve']
+        
+        fig_roc = go.Figure()
+        
+        # ROC Curve
+        fig_roc.add_trace(go.Scatter(
+            x=roc['fpr'],
+            y=roc['tpr'],
+            mode='lines',
+            name=f'ROC Curve (AUC = {roc["auc"]:.3f})',
+            line=dict(color='cyan', width=3),
+            fill='tozeroy',
+            fillcolor='rgba(0,255,255,0.1)',
+            hovertemplate='<b>FPR</b>: %{x:.3f}<br><b>TPR</b>: %{y:.3f}<extra></extra>'
+        ))
+        
+        # Random classifier baseline
+        fig_roc.add_trace(go.Scatter(
+            x=[0, 1],
+            y=[0, 1],
+            mode='lines',
+            name='Random Classifier (AUC = 0.500)',
+            line=dict(color='red', width=2, dash='dash')
+        ))
+        
+        # Add annotations
+        fig_roc.add_annotation(
+            x=0.5, y=0.5,
+            text=f"AUC = {roc['auc']:.3f}",
+            showarrow=False,
+            font=dict(size=16, color='cyan'),
+            bgcolor='rgba(0,0,0,0.5)'
+        )
+        
+        fig_roc.update_layout(
+            xaxis_title='False Positive Rate (1 - Specificity)',
+            yaxis_title='True Positive Rate (Sensitivity)',
+            template="plotly_dark",
+            height=500,
+            title="<b>ROC Curve: COVID-19 Mortality Risk Prediction Model</b>",
+            hovermode='closest',
+            showlegend=True,
+            legend=dict(
+                yanchor="bottom",
+                y=0.01,
+                xanchor="right",
+                x=0.99
+            )
+        )
+        
+        fig_roc.update_xaxes(range=[0, 1], constrain='domain')
+        fig_roc.update_yaxes(range=[0, 1], scaleanchor="x", scaleratio=1)
+        
+        st.plotly_chart(fig_roc, use_container_width=True)
+        
+        # Model interpretation
+        with st.expander("📖 How to Interpret ROC Curve"):
+            st.markdown("""
+            **ROC Curve Interpretation:**
+            
+            - **Perfect Model (AUC = 1.0)**: Curve follows the left and top edges
+            - **Good Model (AUC > 0.8)**: Curve is well above the diagonal
+            - **Random Model (AUC = 0.5)**: Curve follows the diagonal line
+            - **Poor Model (AUC < 0.5)**: Curve is below the diagonal
+            
+            **Our Model Performance:**
+            - AUC = {auc:.3f} indicates **{performance}** discriminative ability
+            - The model can distinguish between high-risk and low-risk cases effectively
+            """.format(
+                auc=roc['auc'],
+                performance="excellent" if roc['auc'] > 0.9 else "good" if roc['auc'] > 0.8 else "fair"
+            ))
+        
+        st.markdown("---")
+        
+        # ===== CONFUSION MATRIX =====
+        st.subheader("🎯 Confusion Matrix")
+        
+        st.markdown("""
+        **Confusion Matrix** shows the model's predictions vs actual outcomes,
+        helping identify types of errors (false positives vs false negatives).
+        """)
+        
+        cm = perf_data['confusion_matrix']
+        
+        # Create confusion matrix visualization
+        cm_matrix = [
+            [cm['true_negative'], cm['false_positive']],
+            [cm['false_negative'], cm['true_positive']]
+        ]
+        
+        # Calculate percentages
+        total = sum([cm['true_negative'], cm['false_positive'], cm['false_negative'], cm['true_positive']])
+        cm_pct = [[val/total*100 for val in row] for row in cm_matrix]
+        
+        # Create heatmap
+        fig_cm = go.Figure(data=go.Heatmap(
+            z=cm_matrix,
+            x=['Predicted: Low Risk', 'Predicted: High Risk'],
+            y=['Actual: Low Risk', 'Actual: High Risk'],
+            text=[[f'{cm_matrix[i][j]}<br>({cm_pct[i][j]:.1f}%)' for j in range(2)] for i in range(2)],
+            texttemplate='%{text}',
+            textfont={"size": 14},
+            colorscale='Blues',
+            showscale=True,
+            hovertemplate='%{x}<br>%{y}<br>Count: %{z}<extra></extra>'
+        ))
+        
+        fig_cm.update_layout(
+            title='<b>Confusion Matrix: Model Predictions vs Actual Outcomes</b>',
+            template="plotly_dark",
+            height=500,
+            xaxis=dict(side='bottom'),
+            yaxis=dict(autorange='reversed')
+        )
+        
+        st.plotly_chart(fig_cm, use_container_width=True)
+        
+        # Confusion matrix metrics
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("True Negatives", f"{cm['true_negative']:,}",
+                     help="Correctly predicted low risk cases")
+        
+        with col2:
+            st.metric("False Positives", f"{cm['false_positive']:,}",
+                     help="Incorrectly predicted as high risk")
+        
+        with col3:
+            st.metric("False Negatives", f"{cm['false_negative']:,}",
+                     help="Incorrectly predicted as low risk")
+        
+        with col4:
+            st.metric("True Positives", f"{cm['true_positive']:,}",
+                     help="Correctly predicted high risk cases")
+        
+        st.markdown("---")
+        
+        # ===== FEATURE IMPORTANCE =====
+        st.subheader("🔍 Feature Importance Analysis")
+        
+        st.markdown("""
+        **Feature Importance** shows which epidemiological factors contribute most
+        to the model's mortality risk predictions.
+        """)
+        
+        feature_imp = perf_data.get('feature_importance', [])[:10]  # Top 10
+        
+        if feature_imp:
+            df_fi = pd.DataFrame(feature_imp)
+            
+            fig_fi = px.bar(
+                df_fi,
+                x='importance',
+                y='feature',
+                orientation='h',
+                title='<b>Top 10 Most Important Features</b>',
+                text='importance',
+                color='importance',
+                color_continuous_scale='Viridis',
+                height=500
+            )
+            
+            fig_fi.update_traces(texttemplate='%{text:.4f}', textposition='outside')
+            fig_fi.update_layout(
+                template="plotly_dark",
+                xaxis_title="Importance Score",
+                yaxis_title="Feature",
+                showlegend=False,
+                yaxis={'categoryorder': 'total ascending'}
+            )
+            
+            st.plotly_chart(fig_fi, use_container_width=True)
+            
+            with st.expander("📋 Feature Descriptions"):
+                st.markdown("""
+                **Feature Definitions:**
+                
+                - **mortality_rate**: Deaths per 100 confirmed cases
+                - **confirmed/deaths/recovered/active**: Absolute case counts
+                - **recovery_rate**: Recovered per 100 confirmed cases
+                - **confirmed_lag1/deaths_lag1**: Previous day values
+                - **daily_*_change**: Day-over-day changes
+                - ***_rolling_7d**: 7-day moving averages
+                - **growth_rate**: Percentage growth rate
+                - **who_region_encoded**: WHO region classification
+                """)
+        
+        st.markdown("---")
+        
+        # ===== TRAINING INFO =====
+        with st.expander("🎓 Model Training Information"):
+            training_info = perf_data.get('training_info', {})
+            
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.metric("Training Samples", f"{training_info.get('training_samples', 0):,}")
+            
+            with col2:
+                st.metric("Test Samples", f"{training_info.get('test_samples', 0):,}")
+            
+            with col3:
+                st.metric("Mortality Threshold", f"{training_info.get('mortality_threshold', 0):.2f}%")
+            
+            st.markdown("""
+            **Model Details:**
+            - **Algorithm**: Random Forest Classifier
+            - **Features**: 15 epidemiological indicators
+            - **Training Method**: Stratified 80/20 train-test split
+            - **Class Balancing**: Balanced class weights
+            - **Cross-validation**: None (single holdout)
+            """)
+    
+    else:
+        st.error("❌ Failed to load model metrics. Ensure model has been trained.")
+        st.info("Run: `python train_model.py` in backend directory")
+    
+    st.markdown("---")
+    
+    # ===== INTERACTIVE PREDICTION TOOL =====
+    st.subheader("🔮 Interactive Mortality Risk Prediction Tool")
+    
+    st.markdown("""
+    Enter epidemiological data below to predict COVID-19 mortality risk using our trained ML model.
+    This tool simulates a **Clinical Decision Support System (CDSS)**.
+    """)
+    
+    # Create input form
+    with st.form("prediction_form"):
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("##### Current Outbreak Metrics")
+            confirmed = st.number_input(
+                "Total Confirmed Cases", 
+                min_value=0, 
+                value=1000, 
+                step=100,
+                help="Total cumulative confirmed COVID-19 cases"
+            )
+            
+            deaths = st.number_input(
+                "Total Deaths", 
+                min_value=0, 
+                value=50, 
+                step=10,
+                help="Total cumulative deaths from COVID-19"
+            )
+            
+            recovered = st.number_input(
+                "Total Recovered", 
+                min_value=0, 
+                value=700, 
+                step=50,
+                help="Total patients recovered from COVID-19"
+            )
+            
+            active = confirmed - deaths - recovered
+            st.info(f"**Calculated Active Cases**: {active:,}")
+        
+        with col2:
+            st.markdown("##### Historical Context (Optional)")
+            
+            confirmed_lag1 = st.number_input(
+                "Previous Day Confirmed", 
+                min_value=0, 
+                value=int(confirmed * 0.95), 
+                step=100,
+                help="Confirmed cases from previous day"
+            )
+            
+            deaths_lag1 = st.number_input(
+                "Previous Day Deaths", 
+                min_value=0, 
+                value=int(deaths * 0.95), 
+                step=10,
+                help="Deaths from previous day"
+            )
+            
+            who_region = st.selectbox(
+                "WHO Region",
+                ["Americas", "Europe", "Western Pacific", 
+                 "Eastern Mediterranean", "South-East Asia", "Africa", "Unknown"],
+                index=0,
+                help="WHO regional classification"
+            )
+            
+            region_mapping = {
+                'Americas': 0, 'Europe': 1, 'Western Pacific': 2, 
+                'Eastern Mediterranean': 3, 'South-East Asia': 4, 'Africa': 5, 'Unknown': 6
+            }
+            who_region_encoded = region_mapping[who_region]
+        
+        # Submit button
+        submitted = st.form_submit_button("🔮 Predict Mortality Risk", type="primary", use_container_width=True)
+    
+    if submitted:
+        # Prepare payload
+        payload = {
+            "confirmed": confirmed,
+            "deaths": deaths,
+            "recovered": recovered,
+            "active": active,
+            "confirmed_lag1": confirmed_lag1,
+            "deaths_lag1": deaths_lag1,
+            "who_region_encoded": who_region_encoded
+        }
+        
+        with st.spinner("🤖 Running ML model prediction..."):
+            try:
+                # POST request to prediction API
+                response = requests.post(
+                    f"{API_ROOT}/api/predictions/mortality",
+                    json=payload,
+                    timeout=10
+                )
+                
+                if response.status_code == 200:
+                    pred_data = response.json()
+                    
+                    if pred_data.get('status') == 'success':
+                        prediction = pred_data['prediction']
+                        
+                        st.success("✅ Prediction Complete!")
+                        
+                        st.markdown("---")
+                        
+                        # Display risk level with color coding
+                        risk_level = prediction['risk_level']
+                        risk_color = prediction['risk_color']
+                        risk_score = prediction['risk_score']
+                        
+                        # Color mapping
+                        color_emoji_map = {
+                            "red": "🔴",
+                            "orange": "🟡",
+                            "green": "🟢"
+                        }
+                        
+                        # Large risk display
+                        st.markdown(f"""
+                        <div style='background-color: {risk_color}; padding: 30px; border-radius: 15px; text-align: center;'>
+                            <h1 style='color: white; margin: 0;'>{color_emoji_map.get(risk_color, '⚪')} {risk_level} RISK</h1>
+                            <h2 style='color: white; margin: 10px 0 0 0;'>Risk Score: {risk_score:.1%}</h2>
+                        </div>
+                        """, unsafe_allow_html=True)
+                        
+                        st.markdown("")
+                        
+                        # Metrics display
+                        col1, col2, col3 = st.columns(3)
+                        
+                        with col1:
+                            st.metric("Risk Score", f"{risk_score:.1%}")
+                        
+                        with col2:
+                            st.metric("Model Confidence", f"{prediction['confidence']:.1%}")
+                        
+                        with col3:
+                            mortality_rate = prediction.get('mortality_rate', 0)
+                            st.metric("Current Mortality Rate", f"{mortality_rate:.2f}%")
+                        
+                        st.markdown("---")
+                        
+                        # Clinical recommendation
+                        st.subheader("💡 Clinical Decision Support Recommendation")
+                        
+                        recommendation = prediction.get('recommendation', 'No recommendation available')
+                        
+                        if risk_level == "HIGH":
+                            st.error(recommendation)
+                        elif risk_level == "MEDIUM":
+                            st.warning(recommendation)
+                        else:
+                            st.success(recommendation)
+                        
+                        st.markdown("---")
+                        
+                        # Input features used
+                        with st.expander("🔍 View Input Features"):
+                            input_data = pred_data.get('input_data', {})
+                            model_info = pred_data.get('model_info', {})
+                            
+                            st.json({
+                                "Input Data": input_data,
+                                "Model Information": model_info
+                            })
+                        
+                        # Download prediction report
+                        report = f"""
+COVID-19 MORTALITY RISK PREDICTION REPORT
+==========================================
+
+Prediction Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+INPUT DATA:
+-----------
+Confirmed Cases: {confirmed:,}
+Deaths: {deaths:,}
+Recovered: {recovered:,}
+Active: {active:,}
+WHO Region: {who_region}
+
+PREDICTION RESULTS:
+-------------------
+Risk Level: {risk_level}
+Risk Score: {risk_score:.3f} ({risk_score*100:.1f}%)
+Model Confidence: {prediction['confidence']:.3f} ({prediction['confidence']*100:.1f}%)
+Current Mortality Rate: {mortality_rate:.2f}%
+
+RECOMMENDATION:
+---------------
+{recommendation}
+
+MODEL INFORMATION:
+------------------
+Algorithm: Random Forest Classifier
+Training Accuracy: {model_info.get('training_accuracy', 0):.3f}
+Features Used: {model_info.get('features_count', 0)}
+
+Generated by: COVID-19 Health Informatics Dashboard
+ITENAS Health Informatics - IFB-499 Informatika Terapan
+                        """
+                        
+                        st.download_button(
+                            label="📥 Download Prediction Report",
+                            data=report,
+                            file_name=f"covid19_risk_prediction_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+                            mime="text/plain"
+                        )
+                    
+                    else:
+                        st.error(f"❌ Prediction failed: {pred_data.get('message', 'Unknown error')}")
+                
+                else:
+                    st.error(f"❌ API Error {response.status_code}: {response.text}")
+                    
+            except requests.exceptions.RequestException as e:
+                st.error(f"❌ Connection error: {str(e)}")
+                st.info("Ensure Flask API is running on http://127.0.0.1:5000")
+
 
 # ==============================
 # PAGE 5: ABOUT
